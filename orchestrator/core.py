@@ -1,13 +1,12 @@
 # Aurelinth - Core data structures and logic for task management, context serialization, and Gemini interaction.
 
-import asyncio
 import uuid
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from orchestrator.gemini import call, call_json
+from orchestrator.gemini import call
 from orchestrator.queue import TaskQueue
 from orchestrator.context import serialize, build_prompt_context
 
@@ -45,6 +44,15 @@ class Task:
 def make_id() -> str:
     return str(uuid.uuid4())[:8]
 
+def default_ctf_pipeline(target: str) -> list[Task]:
+    t_recon = Task(id=make_id(), agent_type=AgentType.WEB_RECON, target=target)
+    t_sqli  = Task(id=make_id(), agent_type=AgentType.SQLI_HUNTER, target=target, depends_on=[t_recon.id])
+    t_xss   = Task(id=make_id(), agent_type=AgentType.XSS_HUNTER, target=target, depends_on=[t_recon.id])
+    t_auth  = Task(id=make_id(), agent_type=AgentType.AUTH_BYPASSER, target=target, depends_on=[t_recon.id])
+    t_flag  = Task(id=make_id(), agent_type=AgentType.FLAG_EXTRACTOR, target=target,
+                   depends_on=[t_sqli.id, t_xss.id, t_auth.id])
+    return [t_recon, t_sqli, t_xss, t_auth, t_flag]
+
 class Orchestrator:
     def __init__(self, queue: TaskQueue, db):
         self.queue = queue
@@ -56,42 +64,6 @@ class Orchestrator:
         self.tasks[task.id] = task
         self.queue.enqueue(task)
         
-    def default_ctf_pipeline(self, target: str) -> list[Task]:
-        """
-        Default pipeline for CTF-Web target.
-        """
-        t_recon = Task(
-            id=make_id(),
-            agent_type=AgentType.WEB_RECON,
-            target=target,
-            depends_on=[]
-        )
-        t_sqli = Task(
-            id=make_id(),
-            agent_type=AgentType.SQLI_HUNTER,
-            target=target,
-            depends_on=[t_recon.id]
-        )
-        t_xss = Task(
-            id=make_id(),
-            agent_type=AgentType.XSS_HUNTER,
-            target=target,
-            depends_on=[t_recon.id]
-        )       
-        t_auth = Task(
-            id=make_id(),
-            agent_type=AgentType.AUTH_BYPASSER,
-            target=target,
-            depends_on=[t_recon.id]
-        )
-        t_flag = Task(
-            id=make_id(),
-            agent_type=AgentType.FLAG_EXTRACTOR,
-            target=target,
-            depends_on=[t_sqli.id, t_xss.id, t_auth.id]
-        )
-        return [t_recon, t_sqli, t_xss, t_auth, t_flag]
-    
     def run_task(self, task: Task, prompt: str) -> None:
         """
         Run a single task: call Gemini, serialize context, emit event.
