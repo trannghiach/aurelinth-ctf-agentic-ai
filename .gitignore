@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Agent temp files — never commit
+*.txt
+*.bin
+*.html
+dump*.py
+src_*.php
+
+# Logs
+*.log
