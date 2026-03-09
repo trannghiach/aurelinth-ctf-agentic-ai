@@ -1,0 +1,4 @@
+
+Warning: fopen(/proc/self/environ): failed to open stream: Permission denied in /hj/var/www/showimage.php on line 13
+
+Warning: fpassthru() expects parameter 1 to be resource, boolean given in /hj/var/www/showimage.php on line 19

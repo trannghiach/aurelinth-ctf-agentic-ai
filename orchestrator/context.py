@@ -6,6 +6,30 @@ from orchestrator.gemini import call, safe_inject
 
 RAW_LIMIT = 3000  # Max chars for raw context, to prevent Gemini overload
 
+def extract_structured(raw: str) -> str:
+    """
+    Gemini output includes 2 parts: narration + structured findings.
+    Take the structured — start from the keyword.
+    """
+    markers = [
+        "TECHNOLOGY:", "ENDPOINTS:", "CONFIRMATION:", "CONTEXT:",
+        "BYPASS METHOD:", "SUMMARY:", "EXTRACTED:", "ENUMERATION:"
+    ]
+
+    lines = raw.split("\n")
+    start_idx = None
+
+    for i, line in enumerate(lines):
+        if any(line.strip().startswith(m) for m in markers):
+            start_idx = i
+            break
+
+    if start_idx is not None:
+        return "\n".join(lines[start_idx:]).strip()
+
+    # Can not find marker → fallback 20 last lines
+    return "\n".join(lines[-20:]).strip()
+
 def serialize(task_id: str, agent_type: str, raw_output: str, db) -> dict:
     """
     After each agent call, serialize the raw output into a clean context.
@@ -24,7 +48,7 @@ def serialize(task_id: str, agent_type: str, raw_output: str, db) -> dict:
     if len(raw_output) <= RAW_LIMIT:
         return {
             "mongo_ref": mongo_ref,
-            "summary": raw_output,
+            "summary": extract_structured(raw_output),
             "truncated": False,
         }
         
