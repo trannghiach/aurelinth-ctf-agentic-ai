@@ -1,8 +1,8 @@
-# run.py
 import sys
 import time
 import threading
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from memory import get_mongo, get_redis
 from orchestrator.core import Orchestrator, TaskStatus
 from orchestrator.queue import TaskQueue
@@ -15,11 +15,11 @@ def ts() -> str:
 
 
 def spinner(label: str, stop_event: threading.Event) -> None:
-    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
     i = 0
     while not stop_event.is_set():
         elapsed = int(time.time() - stop_event.start_time)
-        print(f"\r  {frames[i % len(frames)]} [{label}] running... {elapsed}s", end="", flush=True)
+        print(f"\r  {frames[i%len(frames)]} [{label}] running... {elapsed}s", end="", flush=True)
         i += 1
         time.sleep(0.1)
     print(f"\r", end="")
@@ -36,7 +36,6 @@ def run_task_with_spinner(orc, task, prompt) -> None:
         stop.set()
         t.join()
 
-
 def run_pipeline(target: str, notes: str = "") -> None:
     db = get_mongo()
     r = get_redis()
@@ -49,50 +48,77 @@ def run_pipeline(target: str, notes: str = "") -> None:
     print(f"  Notes  : {notes or 'none'}")
     print(f"{'='*60}\n")
 
-    print(f"[{ts()}] Planning campaign with AI...")
+    print(f"[{ts()}] Planning campaign...")
     tasks = plan_campaign(target, notes)
-    print(f"[{ts()}] Pipeline: {len(tasks)} tasks\n")
     for t in tasks:
-        deps = t.depends_on if t.depends_on else ["—"]
-        print(f"  {t.agent_type.value:22} id={t.id}  deps={deps}")
-
+        orc.tasks[t.id] = t
+    print(f"[{ts()}] {len(tasks)} tasks planned\n")
+    for t in tasks:
+        print(f"  {t.agent_type.value:22} id={t.id}  deps={t.depends_on or ['—']}")
     print()
+
     total_start = time.time()
+    executed = set()
 
-    for task in tasks:
-        if task.is_terminal():
-            continue
+    def propagate_failures(tasks):
+        """Nếu dependency fail → task phụ thuộc cũng fail."""
+        failed_ids = {t.id for t in tasks if t.status == TaskStatus.FAILED}
+        changed = True
+        while changed:
+            changed = False
+            for t in tasks:
+                if t.is_terminal():
+                    continue
+                if any(dep in failed_ids for dep in t.depends_on):
+                    t.status = TaskStatus.FAILED
+                    failed_ids.add(t.id)
+                    print(f"[{ts()}] ✗  [{t.agent_type.value}] skipped — dependency failed")
+                    changed = True
 
-        # Wait for dependencies
-        wait_logged = False
-        while not task.can_run(q.get_completed_ids()):
-            if not wait_logged:
-                print(f"[{ts()}] ⏸  [{task.agent_type.value}] waiting for dependencies...")
-                wait_logged = True
-            time.sleep(2)
-
+    def run_one(task):
         orc.tasks[task.id] = task
         context = orc.get_context_for(task)
         prompt = build_prompt(task.agent_type, target, context)
-
         task_start = time.time()
         print(f"[{ts()}] →  [{task.agent_type.value}] starting")
-
         run_task_with_spinner(orc, task, prompt)
-
         elapsed = int(time.time() - task_start)
-
         if task.status == TaskStatus.DONE:
             summary = task.result.get("summary", "")[:150].replace("\n", " ")
             print(f"[{ts()}] ✓  [{task.agent_type.value}] done in {elapsed}s")
             print(f"           └─ {summary}...")
         elif task.status == TaskStatus.FAILED:
-            print(f"[{ts()}] ✗  [{task.agent_type.value}] failed after {elapsed}s — continuing")
-
+            print(f"[{ts()}] ✗  [{task.agent_type.value}] failed after {elapsed}s")
+        elif task.status == TaskStatus.PENDING:
+            # Retry case — remove from executed để loop pick up lại
+            executed.discard(task.id)
+            print(f"[{ts()}] ↺  [{task.agent_type.value}] retrying...")
         print()
 
+    while True:
+        completed_ids = q.get_completed_ids()
+        propagate_failures(tasks)
+
+        if all(t.is_terminal() for t in tasks):
+            break
+
+        ready = [
+            t for t in tasks
+            if t.id not in executed
+            and not t.is_terminal()
+            and t.can_run(completed_ids)
+        ]
+
+        if not ready:
+            time.sleep(2)
+            continue
+
+        for task in ready:
+            executed.add(task.id)
+            run_one(task)
+
     total = int(time.time() - total_start)
-    done   = [t for t in tasks if t.status == TaskStatus.DONE]
+    done  = [t for t in tasks if t.status == TaskStatus.DONE]
     failed = [t for t in tasks if t.status == TaskStatus.FAILED]
 
     print(f"{'='*60}")

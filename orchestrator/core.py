@@ -78,7 +78,7 @@ class Orchestrator:
         self.queue.emit("agent_start", {"task_id": task.id, "agent": task.agent_type.value})
         
         try:
-            raw = call(task.agent_type.value, prompt, timeout=300)
+            raw = call(task.agent_type.value, prompt)
             ctx = serialize(task.id, task.agent_type.value, raw, self.db)
             self.contexts[task.id] = ctx
             
