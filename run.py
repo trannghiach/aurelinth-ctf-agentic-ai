@@ -204,10 +204,6 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
     failed = [t for t in orc.tasks.values() if t.status == TaskStatus.FAILED]
 
     print(f"{'='*60}")
-    
-    print("DEBUG task statuses:")
-    for t in orc.tasks.values():
-        print(f"  {t.agent_type.value}: {t.status}")
     print(f"  COMPLETE — {ts()} — total {total}s")
     print(f"  Agents run : {len(orc.tasks)}")
     print(f"  Done/Failed: {len(done)}/{len(failed)}")
