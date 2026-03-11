@@ -9,14 +9,14 @@ async def redis_event_stream(r: Redis):
 
     while True:
         try:
-            results = r.xread(
+            results = await asyncio.to_thread(
+                r.xread,
                 {"aurelinth:events": last_id},
-                block=1000,
-                count=10
+                10,   # count
+                1000  # block ms
             )
 
             if not results:
-                await asyncio.sleep(0.1)
                 continue
 
             for stream_name, messages in results:

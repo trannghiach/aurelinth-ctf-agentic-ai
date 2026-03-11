@@ -2,6 +2,15 @@ import { useState, useEffect, useRef } from "react"
 
 const API = "http://localhost:8000"
 
+const eventColor = {
+    agent_start:  "#a3a3a3",
+    agent_done:   "#4ade80",
+    agent_failed: "#f87171",
+    tool_call:    "#60a5fa",
+    tool_result:  "#6b7280",
+    agent_reason: "#c084fc",
+}
+
 export default function App() {
   const [target, setTarget] = useState("")
   const [notes, setNotes] = useState("")
@@ -39,6 +48,21 @@ export default function App() {
       const data = JSON.parse(e.data)
       setEvents(prev => [...prev, { type: "agent_failed", data }])
       updateAgent("agent_failed", data)
+    })
+
+    es.addEventListener("tool_call", e => {
+        const data = JSON.parse(e.data)
+        setEvents(prev => [...prev, { type: "tool_call", data }])
+    })
+
+    es.addEventListener("tool_result", e => {
+        const data = JSON.parse(e.data)
+        setEvents(prev => [...prev, { type: "tool_result", data }])
+    })
+
+    es.addEventListener("agent_reason", e => {
+        const data = JSON.parse(e.data)
+        setEvents(prev => [...prev, { type: "agent_reason", data }])
     })
 
     return () => es.close()
@@ -118,7 +142,7 @@ export default function App() {
       >
         {events.length === 0 && <span style={{ color: "#555" }}>waiting for events...</span>}
         {events.map((e, i) => (
-          <div key={i} style={{ color: e.type === "agent_done" ? "#4ade80" : e.type === "agent_failed" ? "#f87171" : "#a3a3a3" }}>
+          <div key={i} style={{ color: eventColor[e.type] || "#a3a3a3" }}>
             [{e.type}] {JSON.stringify(e.data)}
           </div>
         ))}
