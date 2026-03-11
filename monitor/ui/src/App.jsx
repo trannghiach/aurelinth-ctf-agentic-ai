@@ -9,6 +9,8 @@ const eventColor = {
     tool_call:    "#60a5fa",
     tool_result:  "#6b7280",
     agent_reason: "#c084fc",
+    supervisor_decision: "#f59e0b",
+    flag_found:          "#faff00",
 }
 
 export default function App() {
@@ -63,6 +65,16 @@ export default function App() {
     es.addEventListener("agent_reason", e => {
         const data = JSON.parse(e.data)
         setEvents(prev => [...prev, { type: "agent_reason", data }])
+    })
+
+    es.addEventListener("supervisor_decision", e => {
+        const data = JSON.parse(e.data)
+        setEvents(prev => [...prev, { type: "supervisor_decision", data }])
+    })
+
+    es.addEventListener("flag_found", e => {
+        const data = JSON.parse(e.data)
+        setEvents(prev => [...prev, { type: "flag_found", data }])
     })
 
     return () => es.close()

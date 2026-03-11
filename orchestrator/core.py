@@ -62,7 +62,9 @@ def scan_flag(text: str, flag_format: str) -> str | None:
     prefix = flag_format.split("{")[0]
     pattern = re.escape(prefix) + r"\{[^}]+\}"
     match = re.search(pattern, text)
-    return match.group(0) if match else None
+    
+    real = [m for m in matches if m != flag_format and "..." not in m]
+    return real[0] if real else None
 
 
 def scan_unexpected(summary: str) -> dict | None:

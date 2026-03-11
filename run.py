@@ -9,6 +9,7 @@ from orchestrator.queue import TaskQueue
 from orchestrator.supervisor import decide
 from teams.ctf_web.team import build_prompt
 
+MAX_INTERATIONS = 6
 
 def ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
@@ -41,14 +42,14 @@ def run_agent(orc: Orchestrator, agent_type: AgentType, target: str,
 
     stop = threading.Event()
     stop.start_time = time.time()
-    t = threading.Thread(target=spinner, args=(agent_type.value, stop))
-    t.start()
+    spinner_thread = threading.Thread(target=spinner, args=(agent_type.value, stop))
+    spinner_thread.start()
 
     try:
         flag = orc.run_task(task, prompt, flag_format=flag_format)
     finally:
         stop.set()
-        t.join()
+        spinner_thread.join()
 
     elapsed = int(time.time() - stop.start_time)
     if task.status == TaskStatus.DONE:
@@ -98,7 +99,7 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
 
     # --- Phase 2: Supervisor loop ---
     iteration = 0
-    while not found_flag:
+    while not found_flag and iteration < MAX_INTERATIONS:
         iteration += 1
         print(f"[{ts()}] Supervisor — iteration {iteration}")
 
@@ -138,7 +139,7 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
 
         # Run next agent with recon as context
         task, flag = run_agent(
-            orc, next_agent, target, flag_format, [last_task_id]
+            orc, next_agent, target, flag_format, []
         )
         already_ran.add(next_agent_str)
         last_task_id = task.id
@@ -203,6 +204,10 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
     failed = [t for t in orc.tasks.values() if t.status == TaskStatus.FAILED]
 
     print(f"{'='*60}")
+    
+    print("DEBUG task statuses:")
+    for t in orc.tasks.values():
+        print(f"  {t.agent_type.value}: {t.status}")
     print(f"  COMPLETE — {ts()} — total {total}s")
     print(f"  Agents run : {len(orc.tasks)}")
     print(f"  Done/Failed: {len(done)}/{len(failed)}")

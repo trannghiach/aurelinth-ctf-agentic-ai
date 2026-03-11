@@ -37,7 +37,7 @@ def decide(
             f"- [{u['agent']}]: {u['finding']}" for u in unexpected
         )
 
-    prompt = f"""You are a CTF web security supervisor. Based on findings so far, 
+    prompt = f"""You are a CTF web security supervisor. Based on findings so far,
 decide which single agent to run next.
 
 Target: {target}
@@ -50,16 +50,18 @@ Completed agents and their findings:
 Available agents (not yet run): {", ".join(available) if available else "none"}
 
 Rules:
+- You have NO tools. Do not attempt to use any tools or read any files.
 - Pick the ONE most promising agent based on actual evidence in findings
-- If findings contain a flag matching {flag_format or "CTF flag format"} -> set stop=true, flag=<value>
-- If no more promising agents -> set next=null, stop=true
-- Do not repeat agents already run
-- Prioritize unexpected findings
+- If findings strongly suggest a specific vulnerability → pick matching agent
+- If no clear evidence for remaining agents → set next=null, stop=true
+- If all high-value agents already ran and no flag found → stop=true
+- If findings contain a flag matching {flag_format or "CTF flag format"} → stop=true, flag=<value>
+- Do not run agents just because they haven't run yet — only run if evidence supports it
 
 Return ONLY JSON, no markdown:
 {{
   "next": "agent_name_or_null",
-  "reason": "one sentence why",
+  "reason": "one sentence why — cite specific evidence from findings",
   "stop": false,
   "flag": null
 }}"""
