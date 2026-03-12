@@ -1,5 +1,6 @@
 # Aurelinth — Main runner script: runs the pipeline for a given target, manages phases, and prints final report.
 import sys
+import shutil, os
 import time
 import threading
 from datetime import datetime
@@ -64,6 +65,12 @@ def run_agent(orc: Orchestrator, agent_type: AgentType, target: str,
 
 
 def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
+    # Cleanup temp files from previous runs
+    for path in ["/tmp/sqlmap_out", "/tmp/dalfox_out.txt"]:
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.isfile(path):
+            os.remove(path)
     db = get_mongo()
     r  = get_redis()
     q  = TaskQueue(r)
@@ -157,6 +164,13 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
             if flag:
                 found_flag = flag
                 break
+            
+        elif task.status == TaskStatus.FAILED:
+            # Still add to completed for supervisor to know agent ran and failed
+            completed.append({
+                "agent":   next_agent_str,
+                "summary": f"[FAILED — no findings]"
+            })
 
     # --- Phase 3: flag_extractor if no flag yet ---
     if not found_flag:

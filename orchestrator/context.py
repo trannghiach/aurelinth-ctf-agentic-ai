@@ -36,6 +36,13 @@ def serialize(task_id: str, agent_type: str, raw_output: str, db) -> dict:
     Save raw output in MongoDB for reference, and only pass summary to the next agent.
     """
     
+    if not raw_output or not raw_output.strip():
+        return {
+            "mongo_ref": None,
+            "summary":   "[No output]",
+            "truncated": False,
+        }
+    
     doc = {
         "task_id": task_id,
         "agent_type": agent_type,

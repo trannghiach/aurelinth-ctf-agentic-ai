@@ -52,17 +52,12 @@ def make_id() -> str:
 
 
 def scan_flag(text: str, flag_format: str) -> str | None:
-    r"""
-    Scan text for flag matching flag_format pattern.
-    flag_format example: "picoCTF{...}" -> regex picoCTF\{[^}]+\}
-    Returns flag string if found, None otherwise.
-    """
+    r"""..."""
     if not flag_format or not text:
         return None
     prefix = flag_format.split("{")[0]
     pattern = re.escape(prefix) + r"\{[^}]+\}"
-    match = re.search(pattern, text)
-    
+    matches = re.findall(pattern, text)  # ← fix: define matches
     real = [m for m in matches if m != flag_format and "..." not in m]
     return real[0] if real else None
 
@@ -145,15 +140,19 @@ class Orchestrator:
 
         except Exception as e:
             task.retries += 1
-            if task.retries >= task.MAX_RETRIES:
-                task.status = TaskStatus.FAILED
-                self.q.mark_failed(task.id)
-                self.q.emit("agent_failed", {
-                    "task_id": task.id,
-                    "error":   str(e)[:200]
-                })
-            else:
-                task.status = TaskStatus.PENDING
+            # Always mark FAILED — supervisor loop not to handle retry
+            task.status = TaskStatus.FAILED
+            self.q.mark_failed(task.id)
+            self.q.emit("agent_failed", {
+                "task_id": task.id,
+                "error":   str(e)[:200]
+            })
+            # Save empty context for the next agent not to be None
+            self.contexts[task.id] = {
+                "mongo_ref": None,
+                "summary":   f"[FAILED: {str(e)[:100]}]",
+                "truncated": False,
+            }
             return None
 
     def get_context_for(self, task: Task) -> str:
