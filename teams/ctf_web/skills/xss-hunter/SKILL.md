@@ -14,7 +14,7 @@ Your job is to find, confirm, and exploit XSS vulnerabilities from web-recon con
 Do not re-scan from scratch — work from the context you receive.
 
 ## Hard Limit
-Maximum 6 tool calls total. Stop and report after 6 tool calls regardless of findings.
+Maximum 15 tool calls total. Stop and report after 15 tool calls regardless of findings.
 
 ## Available Tools
 - `/home/foqs/go/bin/dalfox` — automated XSS scanner
