@@ -19,6 +19,7 @@ export default function App() {
   const [events, setEvents] = useState([])
   const [agents, setAgents] = useState({})
   const logRef = useRef(null)
+  const [flagBanner, setFlagBanner] = useState(null)
 
   // Load history on mount
   useEffect(() => {
@@ -75,6 +76,12 @@ export default function App() {
     es.addEventListener("flag_found", e => {
         const data = JSON.parse(e.data)
         setEvents(prev => [...prev, { type: "flag_found", data }])
+    })
+
+    es.addEventListener("pipeline_complete", e => {
+        const data = JSON.parse(e.data)
+        setEvents(prev => [...prev, { type: "pipeline_complete", data }])
+        if (data.flag) setFlagBanner(data)
     })
 
     return () => es.close()
@@ -145,6 +152,30 @@ export default function App() {
             </div>
           ))}
         </div>
+      )}
+
+      {flagBanner && (
+          <div style={{
+              margin: "16px 0",
+              padding: "16px 24px",
+              background: "#0a0a0a",
+              border: "2px solid #faff00",
+              borderRadius: 4,
+              color: "#faff00",
+              fontFamily: "monospace"
+          }}>
+              <div style={{ fontSize: 11, opacity: 0.6 }}>FLAG CAPTURED</div>
+              <div style={{ fontSize: 22, fontWeight: "bold", margin: "4px 0" }}>{flagBanner.flag}</div>
+              <div style={{ fontSize: 11, opacity: 0.6 }}>
+                  {flagBanner.target} — {flagBanner.total_time}s — {flagBanner.agents_run} agents
+              </div>
+              <button
+                  onClick={() => setFlagBanner(null)}
+                  style={{ marginTop: 8, padding: "2px 8px", background: "transparent", border: "1px solid #faff00", color: "#faff00", cursor: "pointer", fontSize: 11 }}
+              >
+                  dismiss
+              </button>
+          </div>
       )}
 
       {/* Event log */}

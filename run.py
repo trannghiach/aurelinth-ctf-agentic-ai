@@ -222,8 +222,22 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
     print(f"  Agents run : {len(orc.tasks)}")
     print(f"  Done/Failed: {len(done)}/{len(failed)}")
     if found_flag:
-        print(f"  FLAG       : {found_flag}")
+        print(f"\n{'🚩'*30}")
+        print(f"  FLAG CAPTURED")
+        print(f"  {found_flag}")
+        print(f"  Target  : {target}")
+        print(f"  Time    : {total}s")
+        print(f"{'🚩'*30}\n")
     print(f"{'='*60}\n")
+    
+    q.emit("pipeline_complete", {
+        "target":     target,
+        "flag":       found_flag or None,
+        "total_time": total,
+        "agents_run": len(orc.tasks),
+        "done":       len(done),
+        "failed":     len(failed),
+    })
 
     # Print flag_extractor report if available
     for task in orc.tasks.values():

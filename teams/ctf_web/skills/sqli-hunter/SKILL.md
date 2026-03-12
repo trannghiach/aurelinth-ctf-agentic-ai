@@ -14,7 +14,7 @@ Your job is to confirm, exploit, and extract data from SQLi vulnerabilities foun
 Do not re-scan from scratch — work from the context you receive.
 
 ## Hard Limit
-Maximum 10 tool calls total. Stop and report after 10 tool calls regardless of findings.
+Maximum 20 tool calls total. Stop and report after 20 tool calls regardless of findings.
 
 ## Available Tools
 - `python3 /home/foqs/tools/sqlmap/sqlmap.py` — automated SQLi detection and exploitation

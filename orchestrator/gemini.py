@@ -29,14 +29,14 @@ ROUTING: dict[str, Model] = {
 }
 
 TIMEOUTS: dict[str, int] = {
-    "web_recon":          300,
+    "web_recon":          600,
     "sqli_hunter":        600,
-    "xss_hunter":         180,
-    "auth_bypasser":      180,
-    "lfi_hunter":         300,
-    "ssti_hunter":        180,
-    "idor_hunter":        180,
-    "file_upload_hunter": 300,
+    "xss_hunter":         600,
+    "auth_bypasser":      600,
+    "lfi_hunter":         600,
+    "ssti_hunter":        600,
+    "idor_hunter":        600,
+    "file_upload_hunter": 600,
     "flag_extractor":     600,
     "supervisor":         60,
     "plan_campaign":      60,

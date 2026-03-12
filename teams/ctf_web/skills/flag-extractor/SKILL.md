@@ -14,7 +14,7 @@ You receive aggregated findings from all previous agents.
 Do not re-exploit what previous agents already confirmed — read their output first.
 
 ## Hard Limit
-Maximum 8 tool calls total. Stop and write final report after 8 tool calls.
+Maximum 20 tool calls total. Stop and write final report after 20 tool calls.
 
 ## Process
 
@@ -72,6 +72,6 @@ RECOMMENDED NEXT STEPS:
 ## Rules
 - Read existing dumps BEFORE re-exploiting anything
 - Pick ONE lead and pursue it — do not scatter across multiple vectors
-- If flag not found after 8 tool calls → report inconclusive
+- If flag not found after 20 tool calls → report inconclusive
 - Final report must always include REMAINING ATTACK SURFACE
 - Do not re-run sqlmap on endpoints already dumped
