@@ -18,6 +18,7 @@ class TaskStatus(Enum):
 
 
 class AgentType(Enum):
+    # --- Blackbox agents ---
     WEB_RECON          = "web_recon"
     SQLI_HUNTER        = "sqli_hunter"
     XSS_HUNTER         = "xss_hunter"
@@ -25,8 +26,50 @@ class AgentType(Enum):
     LFI_HUNTER         = "lfi_hunter"
     SSTI_HUNTER        = "ssti_hunter"
     IDOR_HUNTER        = "idor_hunter"
+    CRYPTO_HUNTER      = "crypto_hunter"
     FILE_UPLOAD_HUNTER = "file_upload_hunter"
     FLAG_EXTRACTOR     = "flag_extractor"
+
+    # --- Whitebox infrastructure ---
+    CODE_READER        = "code_reader"
+    DEP_CHECKER        = "dep_checker"
+    VULN_REASONER      = "vuln_reasoner"
+
+    # --- Whitebox auditors (mirror blackbox hunters) ---
+    SQLI_AUDITOR             = "sqli_auditor"
+    XSS_AUDITOR              = "xss_auditor"
+    AUTH_AUDITOR             = "auth_auditor"
+    LFI_AUDITOR              = "lfi_auditor"
+    SSTI_AUDITOR             = "ssti_auditor"
+    ACCESS_CONTROL_AUDITOR   = "access_control_auditor"
+    UPLOAD_AUDITOR           = "upload_auditor"
+    RACE_CONDITION_AUDITOR   = "race_condition_auditor"
+    CRYPTO_AUDITOR           = "crypto_auditor"
+    DESERIALIZATION_AUDITOR  = "deserialization_auditor"
+
+
+# Agents that belong to whitebox pipeline — used for routing decisions
+WHITEBOX_AGENTS = {
+    AgentType.CODE_READER,
+    AgentType.DEP_CHECKER,
+    AgentType.VULN_REASONER,
+    AgentType.SQLI_AUDITOR,
+    AgentType.XSS_AUDITOR,
+    AgentType.AUTH_AUDITOR,
+    AgentType.LFI_AUDITOR,
+    AgentType.SSTI_AUDITOR,
+    AgentType.ACCESS_CONTROL_AUDITOR,
+    AgentType.UPLOAD_AUDITOR,
+    AgentType.RACE_CONDITION_AUDITOR,
+    AgentType.CRYPTO_AUDITOR,
+    AgentType.DESERIALIZATION_AUDITOR,
+}
+
+WHITEBOX_AUDITORS = WHITEBOX_AGENTS - {
+    AgentType.CODE_READER,
+    AgentType.DEP_CHECKER,
+    AgentType.VULN_REASONER,
+}
 
 
 @dataclass
@@ -52,14 +95,27 @@ def make_id() -> str:
 
 
 def scan_flag(text: str, flag_format: str) -> str | None:
-    r"""..."""
+    r"""Find a real flag matching flag_format prefix in text."""
     if not flag_format or not text:
         return None
     prefix = flag_format.split("{")[0]
-    pattern = re.escape(prefix) + r"\{[^}]+\}"
-    matches = re.findall(pattern, text)  # ← fix: define matches
-    real = [m for m in matches if m != flag_format and "..." not in m]
+    pattern = re.escape(prefix) + r"\{[^}\n]{3,100}\}"
+    matches = re.findall(pattern, text)
+    real = [m for m in matches
+            if m != flag_format
+            and "..." not in m
+            and not re.search(r'\{[\s`]', m)]   # reject quoted/inline mentions
     return real[0] if real else None
+
+
+def scan_flag_section(text: str) -> str | None:
+    """Fallback: find CTF-style flag pattern anywhere in text."""
+    if not text:
+        return None
+    for m in re.findall(r'[A-Za-z0-9_]+\{[^}\n]{5,100}\}', text):
+        if '...' not in m:
+            return m
+    return None
 
 
 def scan_unexpected(summary: str) -> dict | None:
@@ -117,8 +173,10 @@ class Orchestrator:
                 "truncated": ctx["truncated"]
             })
 
-            # Scan for flag
-            flag = scan_flag(raw, flag_format)
+            # Scan for flag (primary: regex with flag_format, fallback: generic pattern)
+            flag = scan_flag(raw, flag_format) if flag_format else scan_flag_section(raw)
+            if not flag:
+                flag = scan_flag(ctx.get("summary", ""), flag_format) if flag_format else scan_flag_section(ctx.get("summary", ""))
             if flag:
                 self.q.emit("flag_found", {
                     "task_id": task.id,
@@ -140,14 +198,12 @@ class Orchestrator:
 
         except Exception as e:
             task.retries += 1
-            # Always mark FAILED — supervisor loop not to handle retry
             task.status = TaskStatus.FAILED
             self.q.mark_failed(task.id)
             self.q.emit("agent_failed", {
                 "task_id": task.id,
                 "error":   str(e)[:200]
             })
-            # Save empty context for the next agent not to be None
             self.contexts[task.id] = {
                 "mongo_ref": None,
                 "summary":   f"[FAILED: {str(e)[:100]}]",

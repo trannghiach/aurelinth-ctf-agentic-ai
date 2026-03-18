@@ -3,14 +3,22 @@ import sys
 import shutil, os
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from memory import get_mongo, get_redis
-from orchestrator.core import Orchestrator, Task, AgentType, TaskStatus, make_id, scan_flag
+from orchestrator.core import (
+    Orchestrator, Task, AgentType, TaskStatus, make_id,
+    scan_flag, scan_flag_section, scan_unexpected,
+    WHITEBOX_AUDITORS
+)
 from orchestrator.queue import TaskQueue
 from orchestrator.supervisor import decide
-from teams.ctf_web.team import build_prompt
+from orchestrator.health import run_health_check
+from teams.ctf_web_blackbox.team import build_prompt as build_blackbox_prompt
+from teams.ctf_web_whitebox.team import build_prompt as build_whitebox_prompt
 
-MAX_INTERATIONS = 6
+MAX_ITERATIONS = 6
+
 
 def ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
@@ -27,8 +35,18 @@ def spinner(label: str, stop_event: threading.Event) -> None:
     print(f"\r", end="")
 
 
-def run_agent(orc: Orchestrator, agent_type: AgentType, target: str,
-              flag_format: str, dep_ids: list[str]) -> tuple[Task, str | None]:
+def run_agent(
+    orc: Orchestrator,
+    agent_type: AgentType,
+    target: str,
+    flag_format: str,
+    dep_ids: list[str],
+    # Whitebox extras — None in blackbox mode
+    local_target: str | None = None,
+    source_code: str | None = None,
+    show_spinner: bool = True,
+    context_override: str | None = None,
+) -> tuple[Task, str | None]:
     """Run a single agent, return (task, flag_or_None)."""
     task = Task(
         id=make_id(),
@@ -38,21 +56,33 @@ def run_agent(orc: Orchestrator, agent_type: AgentType, target: str,
     )
     orc.tasks[task.id] = task
 
-    context = orc.get_context_for(task)
-    prompt  = build_prompt(agent_type, target, context, flag_format)
+    context = context_override if context_override is not None else orc.get_context_for(task)
 
-    stop = threading.Event()
-    stop.start_time = time.time()
-    spinner_thread = threading.Thread(target=spinner, args=(agent_type.value, stop))
-    spinner_thread.start()
+    # Route to correct prompt builder
+    if source_code is not None:
+        prompt = build_whitebox_prompt(
+            agent_type, target, context, flag_format,
+            local_target=local_target,
+            source_code=source_code,
+        )
+    else:
+        prompt = build_blackbox_prompt(agent_type, target, context, flag_format)
+
+    start_time = time.time()
+    if show_spinner:
+        stop = threading.Event()
+        stop.start_time = start_time
+        spinner_thread = threading.Thread(target=spinner, args=(agent_type.value, stop))
+        spinner_thread.start()
 
     try:
         flag = orc.run_task(task, prompt, flag_format=flag_format)
     finally:
-        stop.set()
-        spinner_thread.join()
+        if show_spinner:
+            stop.set()
+            spinner_thread.join()
 
-    elapsed = int(time.time() - stop.start_time)
+    elapsed = int(time.time() - start_time)
     if task.status == TaskStatus.DONE:
         summary = (task.result or {}).get("summary", "")[:150].replace("\n", " ")
         print(f"[{ts()}] ✓  [{agent_type.value}] done in {elapsed}s")
@@ -64,39 +94,26 @@ def run_agent(orc: Orchestrator, agent_type: AgentType, target: str,
     return task, flag
 
 
-def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
-    # Cleanup temp files from previous runs
-    for path in ["/tmp/sqlmap_out", "/tmp/dalfox_out.txt"]:
-        if os.path.isdir(path):
-            shutil.rmtree(path, ignore_errors=True)
-        elif os.path.isfile(path):
-            os.remove(path)
-    db = get_mongo()
-    r  = get_redis()
-    q  = TaskQueue(r)
-    orc = Orchestrator(q, db)
+# ─────────────────────────────────────────────
+# BLACKBOX PIPELINE (unchanged behaviour)
+# ─────────────────────────────────────────────
 
-    print(f"\n{'='*60}")
-    print(f"  AURELINTH — {ts()}")
-    print(f"  Target      : {target}")
-    print(f"  Notes       : {notes or 'none'}")
-    print(f"  Flag format : {flag_format or 'unknown'}")
-    print(f"{'='*60}\n")
+def run_blackbox_pipeline(
+    orc: Orchestrator,
+    q: TaskQueue,
+    target: str,
+    notes: str,
+    flag_format: str,
+) -> str | None:
+    already_ran = set()
+    completed   = []
+    unexpected  = []
+    found_flag  = None
 
-    total_start  = time.time()
-    already_ran  = set()
-    completed    = []   # [{"agent": ..., "summary": ...}]
-    unexpected   = []   # [{"agent": ..., "finding": ...}]
-    found_flag   = None
-    last_task_id = None
-
-    # --- Phase 1: web_recon always first ---
+    # Phase 1: web_recon always first
     print(f"[{ts()}] Phase 1 — web_recon\n")
-    recon_task, flag = run_agent(
-        orc, AgentType.WEB_RECON, target, flag_format, []
-    )
+    recon_task, flag = run_agent(orc, AgentType.WEB_RECON, target, flag_format, [])
     already_ran.add("web_recon")
-    last_task_id = recon_task.id
 
     if recon_task.status == TaskStatus.DONE:
         summary = (recon_task.result or {}).get("summary", "")
@@ -104,9 +121,10 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
         if flag:
             found_flag = flag
 
-    # --- Phase 2: Supervisor loop ---
+    # Phase 2: Supervisor loop
     iteration = 0
-    while not found_flag and iteration < MAX_INTERATIONS:
+    retried: set[str] = set()
+    while not found_flag and iteration < MAX_ITERATIONS:
         iteration += 1
         print(f"[{ts()}] Supervisor — iteration {iteration}")
 
@@ -121,19 +139,40 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
         q.emit("supervisor_decision", {
             "iteration": iteration,
             "next":      decision.get("next"),
+            "retry":     decision.get("retry"),
             "reason":    decision.get("reason", ""),
             "stop":      decision.get("stop", False),
         })
+        print(f"           next={decision.get('next')} retry={decision.get('retry')} | {decision.get('reason', '')}\n")
 
-        print(f"           next={decision.get('next')} | {decision.get('reason', '')}")
-        print()
-
-        # Check if supervisor found flag in context
         if decision.get("flag"):
             found_flag = decision["flag"]
             break
 
-        # Stop condition
+        # Handle retry — re-run a prior agent that produced insufficient output
+        retry_agent_str = decision.get("retry")
+        if retry_agent_str and retry_agent_str not in retried:
+            retried.add(retry_agent_str)
+            try:
+                retry_agent = AgentType(retry_agent_str)
+            except ValueError:
+                print(f"[{ts()}] ✗  Unknown retry agent '{retry_agent_str}' — skipping retry")
+            else:
+                print(f"[{ts()}] ↺  retrying [{retry_agent_str}]\n")
+                dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
+                retry_context = f"RETRY: previous output was insufficient. {decision.get('reason', '')} Be more thorough."
+                task, flag = run_agent(orc, retry_agent, target, flag_format, dep_ids,
+                                       context_override=retry_context)
+                if flag:
+                    found_flag = flag
+                    break
+                if task.status == TaskStatus.DONE:
+                    summary = (task.result or {}).get("summary", "")
+                    # Replace prior summary for this agent
+                    completed = [c for c in completed if c["agent"] != retry_agent_str]
+                    completed.append({"agent": retry_agent_str, "summary": summary})
+            continue
+
         if decision.get("stop") or not decision.get("next"):
             break
 
@@ -144,81 +183,302 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
             print(f"[{ts()}] ✗  Unknown agent '{next_agent_str}' — stopping")
             break
 
-        # Run next agent with recon as context
-        task, flag = run_agent(
-            orc, next_agent, target, flag_format, []
-        )
+        dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
+        context_for_next = decision.get("context_for_next")
+        task, flag = run_agent(orc, next_agent, target, flag_format, dep_ids,
+                               context_override=context_for_next)
         already_ran.add(next_agent_str)
-        last_task_id = task.id
+
+        if flag:
+            found_flag = flag
+            break
 
         if task.status == TaskStatus.DONE:
             summary = (task.result or {}).get("summary", "")
             completed.append({"agent": next_agent_str, "summary": summary})
 
-            # Check unexpected findings
-            from orchestrator.core import scan_unexpected
+            if not flag:
+                flag = scan_flag(summary, flag_format) or scan_flag_section(summary)
+                if flag:
+                    found_flag = flag
+                    break
+
             unexp = scan_unexpected(summary)
             if unexp:
                 unexpected.append({"agent": next_agent_str, "finding": unexp["raw"]})
 
+        elif task.status == TaskStatus.FAILED:
+            completed.append({"agent": next_agent_str, "summary": "[FAILED — no findings]"})
+
+    return found_flag
+
+
+# ─────────────────────────────────────────────
+# WHITEBOX PIPELINE
+# ─────────────────────────────────────────────
+
+def run_whitebox_pipeline(
+    orc: Orchestrator,
+    q: TaskQueue,
+    target: str,
+    local_target: str,
+    source_code: str,
+    flag_format: str,
+    notes: str,
+) -> str | None:
+    already_ran = set()
+    completed   = []   # [{"agent": ..., "summary": ...}]
+    found_flag  = None
+
+    wb_kwargs = dict(local_target=local_target, source_code=source_code)
+
+    # Phase 1+2: code_reader and dep_checker in parallel (independent — no shared target)
+    print(f"[{ts()}] Phase 1+2 — code_reader + dep_checker (parallel)\n")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_to_name = {
+            executor.submit(
+                run_agent, orc, AgentType.CODE_READER, target, flag_format, [],
+                local_target=local_target, source_code=source_code, show_spinner=False,
+            ): "code_reader",
+            executor.submit(
+                run_agent, orc, AgentType.DEP_CHECKER, target, flag_format, [],
+                local_target=local_target, source_code=source_code, show_spinner=False,
+            ): "dep_checker",
+        }
+        results = {}
+        pending = set(future_to_name)
+        for future in as_completed(future_to_name):
+            results[future_to_name[future]] = future.result()
+            pending.discard(future)
+            if pending:
+                still = ", ".join(future_to_name[f] for f in pending)
+                print(f"[{ts()}]    waiting for: {still} ...\n")
+
+    cr_task, cr_flag = results["code_reader"]
+    dc_task, dc_flag = results["dep_checker"]
+
+    already_ran.update({"code_reader", "dep_checker"})
+
+    for task_obj, agent_name, agent_flag in [
+        (cr_task, "code_reader", cr_flag),
+        (dc_task, "dep_checker", dc_flag),
+    ]:
+        if task_obj.status == TaskStatus.DONE:
+            summary = (task_obj.result or {}).get("summary", "")
+            completed.append({"agent": agent_name, "summary": summary})
+            if agent_flag:
+                return agent_flag
+
+    # Phase 3: vuln_reasoner (depends on both)
+    print(f"[{ts()}] Phase 3 — vuln_reasoner\n")
+    dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
+    vr_task, flag = run_agent(
+        orc, AgentType.VULN_REASONER, target, flag_format, dep_ids, **wb_kwargs
+    )
+    already_ran.add("vuln_reasoner")
+    if vr_task.status == TaskStatus.DONE:
+        summary = (vr_task.result or {}).get("summary", "")
+        completed.append({"agent": "vuln_reasoner", "summary": summary})
+        if flag:
+            return flag
+    else:
+        print(f"[{ts()}] ✗  vuln_reasoner failed — cannot continue whitebox pipeline\n")
+        return None
+
+    # Phase 4: Supervisor loop — picks auditors based on vuln_reasoner findings
+    available_auditors = {a.value for a in WHITEBOX_AUDITORS}
+    iteration = 0
+    retried: set[str] = set()
+
+    while not found_flag and iteration < MAX_ITERATIONS:
+        iteration += 1
+        print(f"[{ts()}] Supervisor — iteration {iteration}")
+
+        decision = decide(
+            target=target,
+            flag_format=flag_format,
+            completed=completed,
+            unexpected=[],
+            already_ran=already_ran,
+            mode="whitebox",
+        )
+
+        q.emit("supervisor_decision", {
+            "iteration": iteration,
+            "next":      decision.get("next"),
+            "retry":     decision.get("retry"),
+            "reason":    decision.get("reason", ""),
+            "stop":      decision.get("stop", False),
+        })
+        print(f"           next={decision.get('next')} retry={decision.get('retry')} | {decision.get('reason', '')}\n")
+
+        if decision.get("flag"):
+            found_flag = decision["flag"]
+            break
+
+        # Handle retry
+        retry_agent_str = decision.get("retry")
+        if retry_agent_str and retry_agent_str not in retried:
+            retried.add(retry_agent_str)
+            if retry_agent_str not in available_auditors:
+                print(f"[{ts()}] ✗  retry target '{retry_agent_str}' is not a whitebox auditor — skipping")
+            else:
+                try:
+                    retry_agent = AgentType(retry_agent_str)
+                except ValueError:
+                    print(f"[{ts()}] ✗  Unknown retry agent '{retry_agent_str}' — skipping")
+                else:
+                    print(f"[{ts()}] ↺  retrying [{retry_agent_str}]\n")
+                    dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
+                    retry_context = f"RETRY: previous output was insufficient. {decision.get('reason', '')} Be more thorough."
+                    task, flag = run_agent(orc, retry_agent, target, flag_format, dep_ids,
+                                           context_override=retry_context, **wb_kwargs)
+                    if flag:
+                        found_flag = flag
+                        break
+                    if task.status == TaskStatus.DONE:
+                        summary = (task.result or {}).get("summary", "")
+                        completed = [c for c in completed if c["agent"] != retry_agent_str]
+                        completed.append({"agent": retry_agent_str, "summary": summary})
+            continue
+
+        if decision.get("stop") or not decision.get("next"):
+            break
+
+        next_agent_str = decision["next"]
+
+        # Supervisor must only pick auditors in whitebox mode
+        if next_agent_str not in available_auditors:
+            print(f"[{ts()}] ✗  '{next_agent_str}' is not a whitebox auditor — stopping")
+            break
+
+        try:
+            next_agent = AgentType(next_agent_str)
+        except ValueError:
+            print(f"[{ts()}] ✗  Unknown agent '{next_agent_str}' — stopping")
+            break
+
+        dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
+        context_for_next = decision.get("context_for_next")
+        task, flag = run_agent(
+            orc, next_agent, target, flag_format, dep_ids,
+            context_override=context_for_next, **wb_kwargs
+        )
+        already_ran.add(next_agent_str)
+
+        if flag:
+            found_flag = flag
+            break
+
+        if task.status == TaskStatus.DONE:
+            summary = (task.result or {}).get("summary", "")
+            completed.append({"agent": next_agent_str, "summary": summary})
+
+            flag = scan_flag(summary, flag_format) or scan_flag_section(summary)
             if flag:
                 found_flag = flag
                 break
-            
+
         elif task.status == TaskStatus.FAILED:
-            # Still add to completed for supervisor to know agent ran and failed
-            completed.append({
-                "agent":   next_agent_str,
-                "summary": f"[FAILED — no findings]"
-            })
+            completed.append({"agent": next_agent_str, "summary": "[FAILED — no findings]"})
 
-    # --- Phase 3: flag_extractor if no flag yet ---
-    if not found_flag:
-        print(f"[{ts()}] Phase 3 — flag_extractor\n")
-        all_dep_ids = [t.id for t in orc.tasks.values()
-                       if t.status == TaskStatus.DONE]
+    return found_flag
 
-        flag_task = Task(
-            id=make_id(),
-            agent_type=AgentType.FLAG_EXTRACTOR,
-            target=target,
-            depends_on=all_dep_ids
+
+# ─────────────────────────────────────────────
+# MAIN ENTRY POINT
+# ─────────────────────────────────────────────
+
+def cleanup_tmp(redis_client=None) -> None:
+    """Wipe /tmp/aurelinth/, stray agent artifacts, and Redis state before a new run."""
+    import glob
+
+    # Flush Redis pipeline state — stale task IDs and events from previous runs
+    if redis_client is not None:
+        for key in redis_client.keys("aurelinth:*"):
+            redis_client.delete(key)
+
+    # Wipe dedicated agent directory
+    aurelinth_tmp = "/tmp/aurelinth"
+    if os.path.isdir(aurelinth_tmp):
+        shutil.rmtree(aurelinth_tmp, ignore_errors=True)
+    os.makedirs(aurelinth_tmp, exist_ok=True)
+
+    # Wipe gemini-cli tool output cache — contains outputs from previous sessions
+    # that agents will grep through if they search the filesystem for flag patterns
+    gemini_cache = os.path.expanduser("~/.gemini/tmp")
+    if os.path.isdir(gemini_cache):
+        shutil.rmtree(gemini_cache, ignore_errors=True)
+
+    # Remove stray files in /tmp/ root that agents may have written directly
+    stray_patterns = [
+        "/tmp/*.py",
+        "/tmp/*.bak",
+        "/tmp/*.pem",
+        "/tmp/flag*",
+        "/tmp/sqlmap_out",
+        "/tmp/dalfox_out.txt",
+    ]
+    for pattern in stray_patterns:
+        for path in glob.glob(pattern):
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
+def run_pipeline(
+    target: str,
+    notes: str = "",
+    flag_format: str = "",
+    local_target: str = "",
+    source_code: str = "",
+) -> None:
+    if not run_health_check():
+        print("Aborting — fix errors above before running.")
+        return
+
+    db  = get_mongo()
+    r   = get_redis()
+    cleanup_tmp(redis_client=r)
+    q   = TaskQueue(r)
+    orc = Orchestrator(q, db)
+
+    is_whitebox = bool(source_code)
+    mode = "WHITEBOX" if is_whitebox else "BLACKBOX"
+
+    print(f"\n{'='*60}")
+    print(f"  AURELINTH — {ts()} — {mode}")
+    print(f"  Target      : {target}")
+    if is_whitebox:
+        print(f"  Local       : {local_target or 'not provided'}")
+        print(f"  Source      : {source_code}")
+    print(f"  Notes       : {notes or 'none'}")
+    print(f"  Flag format : {flag_format or 'unknown'}")
+    print(f"{'='*60}\n")
+
+    total_start = time.time()
+
+    if is_whitebox:
+        found_flag = run_whitebox_pipeline(
+            orc, q, target, local_target, source_code, flag_format, notes
         )
-        orc.tasks[flag_task.id] = flag_task
-
-        # Build full context from all completed agents
-        full_context = "\n".join(
-            f"- [{c['agent']}]: {c['summary'][:500]}" for c in completed
-        )
-        prompt = build_prompt(
-            AgentType.FLAG_EXTRACTOR, target,
-            f"## Context from all agents:\n{full_context}",
-            flag_format
+    else:
+        found_flag = run_blackbox_pipeline(
+            orc, q, target, notes, flag_format
         )
 
-        stop = threading.Event()
-        stop.start_time = time.time()
-        t = threading.Thread(target=spinner, args=("flag_extractor", stop))
-        t.start()
-        try:
-            found_flag = orc.run_task(flag_task, prompt, flag_format=flag_format)
-        finally:
-            stop.set()
-            t.join()
-
-        elapsed = int(time.time() - stop.start_time)
-        if flag_task.status == TaskStatus.DONE:
-            print(f"[{ts()}] ✓  [flag_extractor] done in {elapsed}s\n")
-        else:
-            print(f"[{ts()}] ✗  [flag_extractor] failed after {elapsed}s\n")
-
-    # --- Final report ---
-    total = int(time.time() - total_start)
+    # Final report
+    total  = int(time.time() - total_start)
     done   = [t for t in orc.tasks.values() if t.status == TaskStatus.DONE]
     failed = [t for t in orc.tasks.values() if t.status == TaskStatus.FAILED]
 
     print(f"{'='*60}")
     print(f"  COMPLETE — {ts()} — total {total}s")
+    print(f"  Mode       : {mode}")
     print(f"  Agents run : {len(orc.tasks)}")
     print(f"  Done/Failed: {len(done)}/{len(failed)}")
     if found_flag:
@@ -229,9 +489,10 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
         print(f"  Time    : {total}s")
         print(f"{'🚩'*30}\n")
     print(f"{'='*60}\n")
-    
+
     q.emit("pipeline_complete", {
         "target":     target,
+        "mode":       mode.lower(),
         "flag":       found_flag or None,
         "total_time": total,
         "agents_run": len(orc.tasks),
@@ -239,7 +500,6 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
         "failed":     len(failed),
     })
 
-    # Print flag_extractor report if available
     for task in orc.tasks.values():
         if task.agent_type == AgentType.FLAG_EXTRACTOR and task.result:
             print("FINAL REPORT:")
@@ -248,12 +508,28 @@ def run_pipeline(target: str, notes: str = "", flag_format: str = "") -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python run.py <target> [notes] [flag_format]")
-        print("Example: python run.py http://... 'php app' 'picoCTF{...}'")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="Aurelinth — CTF Web Agent")
+    parser.add_argument("target",                        nargs="?", help="Real target URL")
+    parser.add_argument("--notes",        default="",   help="Challenge notes")
+    parser.add_argument("--flag-format",  default="",   help="e.g. picoCTF{...}")
+    parser.add_argument("--local-target", default="",   help="Local target URL (whitebox)")
+    parser.add_argument("--source-code",  default="",   help="Path to source code (whitebox)")
+    parser.add_argument("--health-check", action="store_true", help="Run health check and exit")
+    args = parser.parse_args()
 
-    target      = sys.argv[1]
-    notes       = sys.argv[2] if len(sys.argv) > 2 else ""
-    flag_format = sys.argv[3] if len(sys.argv) > 3 else ""
-    run_pipeline(target, notes, flag_format)
+    if args.health_check:
+        import sys
+        ok = run_health_check(verbose=True)
+        sys.exit(0 if ok else 1)
+
+    if not args.target:
+        parser.error("target is required unless --health-check is used")
+
+    run_pipeline(
+        target       = args.target,
+        notes        = args.notes,
+        flag_format  = args.flag_format,
+        local_target = args.local_target,
+        source_code  = args.source_code,
+    )

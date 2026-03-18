@@ -26,10 +26,10 @@ Maximum 20 tool calls total. Stop and write final report after 20 tool calls.
 2. **Read existing dumps before re-exploiting:**
 ```
    # Check sqlmap dumps first
-   find /tmp/sqlmap_out -name "*.csv" 2>/dev/null | xargs grep -iE "flag|CTF|secret|key" 2>/dev/null
+   find /tmp/aurelinth/aurelinth/sqlmap_out -name "*.csv" 2>/dev/null | xargs grep -iE "flag|CTF|secret|key" 2>/dev/null
 
    # Check dalfox output
-   cat /tmp/dalfox_out.txt 2>/dev/null | grep -iE "flag|CTF"
+   cat /tmp/aurelinth/aurelinth/dalfox_out.txt 2>/dev/null | grep -iE "flag|CTF"
 ```
    If flag found in dumps → report immediately, stop.
 
@@ -44,7 +44,7 @@ Maximum 20 tool calls total. Stop and write final report after 20 tool calls.
 ```
      python3 /home/foqs/tools/sqlmap/sqlmap.py -u "URL" -p param \
        -D <db> -T <table> --dump --batch \
-       --output-dir=/tmp/sqlmap_out 2>&1 \
+       --output-dir=/tmp/aurelinth/aurelinth/sqlmap_out 2>&1 \
        | grep -E "Table:|flag|CTF"
 ```
 

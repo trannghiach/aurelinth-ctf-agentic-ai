@@ -62,6 +62,7 @@ def serialize(task_id: str, agent_type: str, raw_output: str, db) -> dict:
     # Otherwise, summarize it with Gemini and return the summary + MongoDB reference
     prompt = f"""Summarize the following security tool output into a concise list of key findings.
 Keep it under 500 words. Focus on: hosts, endpoints, vulnerabilities, interesting observations.
+IMPORTANT: If the output contains a captured flag (e.g. CTF{{...}}), preserve the EXACT flag string in your summary.
 
 {safe_inject(raw_output[:8000])}
 

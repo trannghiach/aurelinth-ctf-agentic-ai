@@ -3,7 +3,6 @@
 
 import subprocess
 import json
-import tempfile
 import time
 from enum import Enum
 
@@ -29,21 +28,21 @@ ROUTING: dict[str, Model] = {
 }
 
 TIMEOUTS: dict[str, int] = {
-    "web_recon":          600,
-    "sqli_hunter":        600,
-    "xss_hunter":         600,
-    "auth_bypasser":      600,
-    "lfi_hunter":         600,
-    "ssti_hunter":        600,
-    "idor_hunter":        600,
-    "file_upload_hunter": 600,
-    "flag_extractor":     600,
-    "supervisor":         60,
+    "web_recon":          12000,
+    "sqli_hunter":        12000,
+    "xss_hunter":         12000,
+    "auth_bypasser":      12000,
+    "lfi_hunter":         12000,
+    "ssti_hunter":        12000,
+    "idor_hunter":        12000,
+    "file_upload_hunter": 12000,
+    "flag_extractor":     12000,
+    "supervisor":         120,
     "plan_campaign":      60,
     "should_pivot":       60,
 }
 
-def get_timeout(task_type: str, default: int = 120) -> int:
+def get_timeout(task_type: str, default: int = 12000) -> int:
     return TIMEOUTS.get(task_type, default)
 
 def safe_inject(external_data: str) -> str:
@@ -70,7 +69,7 @@ def call(task_type: str, prompt: str, timeout: int = None, task_id: str = None, 
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=tempfile.gettempdir()  # agent works inside /tmp, not project folder
+            cwd="/tmp/aurelinth"  # agent works inside /tmp/aurelinth, not project folder
         )
 
         output_lines = []

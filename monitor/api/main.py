@@ -22,6 +22,12 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/full")
+def health_full():
+    from orchestrator.health import health_summary
+    return health_summary()
+
+
 @app.get("/stream")
 async def stream():
     """SSE endpoint — browser connects here for real-time events."""
@@ -48,11 +54,27 @@ def history(limit: int = 100):
 
 
 @app.post("/run")
-async def run_pipeline(target: str, notes: str = ""):
+async def run_pipeline(
+    target: str,
+    notes: str = "",
+    flag_format: str = "",
+    local_target: str = "",
+    source_code: str = "",
+):
     """Start pipeline in background subprocess."""
+    # Clear stale Redis task sets before new run
+    r = get_redis()
+    r.delete("aurelinth:tasks:done", "aurelinth:tasks:failed")
+
     cmd = ["python3", "run.py", target]
     if notes:
-        cmd.append(notes)
+        cmd += ["--notes", notes]
+    if flag_format:
+        cmd += ["--flag-format", flag_format]
+    if local_target:
+        cmd += ["--local-target", local_target]
+    if source_code:
+        cmd += ["--source-code", source_code]
 
     subprocess.Popen(
         cmd,
@@ -60,7 +82,9 @@ async def run_pipeline(target: str, notes: str = ""):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-    return {"status": "started", "target": target}
+
+    mode = "whitebox" if source_code else "blackbox"
+    return {"status": "started", "target": target, "mode": mode}
 
 
 @app.get("/tasks")

