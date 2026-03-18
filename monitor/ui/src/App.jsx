@@ -150,6 +150,14 @@ export default function App() {
         setRunning(true)
     }
 
+    function clear() {
+        fetch(`${API}/clear`, { method: "POST" })
+        setEvents([])
+        setAgents({})
+        setFlagBanner(null)
+        setRunning(false)
+    }
+
     return (
         <div style={{
             fontFamily: "monospace",
@@ -167,6 +175,14 @@ export default function App() {
                 <span style={{ fontSize: 11, color: running ? "#facc15" : "#333", marginLeft: 10 }}>
                     {running ? `${spinnerFrames[spinnerIdx]} running` : "idle"}
                 </span>
+                <button onClick={clear} disabled={running} style={{
+                    marginLeft: 12, padding: "2px 10px", borderRadius: 3,
+                    fontFamily: "monospace", fontSize: 11,
+                    background: "transparent",
+                    border: "1px solid #222",
+                    color: running ? "#222" : "#444",
+                    cursor: running ? "not-allowed" : "pointer",
+                }}>clear</button>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
                     {["blackbox", "whitebox"].map(m => (
                         <button key={m} onClick={() => setMode(m)} style={{

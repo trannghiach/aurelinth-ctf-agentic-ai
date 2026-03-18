@@ -53,6 +53,16 @@ def history(limit: int = 100):
         return {"events": [], "error": str(e)}
 
 
+@app.post("/clear")
+def clear_events():
+    """Wipe all aurelinth:* keys from Redis — clears event history for the UI."""
+    r = get_redis()
+    keys = r.keys("aurelinth:*")
+    if keys:
+        r.delete(*keys)
+    return {"cleared": len(keys)}
+
+
 @app.post("/run")
 async def run_pipeline(
     target: str,
@@ -62,9 +72,11 @@ async def run_pipeline(
     source_code: str = "",
 ):
     """Start pipeline in background subprocess."""
-    # Clear stale Redis task sets before new run
+    # Wipe all stale events and task state before new run
     r = get_redis()
-    r.delete("aurelinth:tasks:done", "aurelinth:tasks:failed")
+    keys = r.keys("aurelinth:*")
+    if keys:
+        r.delete(*keys)
 
     cmd = ["python3", "run.py", target]
     if notes:
