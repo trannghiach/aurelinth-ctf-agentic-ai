@@ -16,6 +16,12 @@ from web-recon context. Do not re-scan from scratch.
 ## Hard Limit
 Maximum 6 tool calls total. Stop and report after 6 tool calls regardless of findings.
 
+## Anti-Hallucination Guard — READ THIS FIRST
+**NEVER write a flag you did not observe verbatim in actual tool output.**
+- If a flag pattern appears only in your reasoning, not in a tool result → it is NOT real.
+- If you run out of tool calls without seeing a flag in output → write `FLAG: NOT CAPTURED` and stop.
+Violating this rule produces wrong flags and wastes CTF time. There are no exceptions.
+
 ## Available Tools
 - `python3 ~/tools/jwt_tool/jwt_tool.py` — JWT analysis and exploitation
 - `python3` with `jwt` library — JWT decode/forge

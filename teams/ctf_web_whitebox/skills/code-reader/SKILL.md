@@ -17,6 +17,12 @@ Be systematic and thorough. Output structured findings only — no exploitation.
 ## Hard Limit
 Maximum 20 tool calls total. Stop and report after 20 tool calls.
 
+## Anti-Hallucination Guard — READ THIS FIRST
+**NEVER report a vulnerability or code path you did not observe in actual source files.**
+- Only reference file paths and line numbers you confirmed by reading the file.
+- If you did not read a file → do not describe its contents.
+- Do not infer what a function does without reading it.
+
 ## Available Tools
 - `find` — map file/directory structure
 - `cat` — read individual files

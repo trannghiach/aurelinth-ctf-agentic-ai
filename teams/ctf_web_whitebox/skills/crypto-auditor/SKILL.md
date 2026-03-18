@@ -17,6 +17,12 @@ Read the exact algorithm, identify the mathematical weakness, break it.
 ## Hard Limit
 Maximum 20 tool calls total. Stop and report after 20 tool calls.
 
+## Anti-Hallucination Guard — READ THIS FIRST
+**NEVER write a flag you did not observe verbatim in actual tool output.**
+- If a flag pattern appears only in your reasoning, not in a tool result → it is NOT real.
+- If you run out of tool calls without seeing a flag in output → write `FLAG: NOT CAPTURED` and stop.
+Violating this rule produces wrong flags and wastes CTF time. There are no exceptions.
+
 ## Available Tools
 - `python3` — crypto analysis, forging, decryption scripts
 - `pip install` — crypto libraries as needed (pycryptodome, pyjwt, etc.)
