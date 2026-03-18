@@ -8,7 +8,7 @@ from datetime import datetime
 from memory import get_mongo, get_redis
 from orchestrator.core import (
     Orchestrator, Task, AgentType, TaskStatus, make_id,
-    scan_flag, scan_flag_section, scan_unexpected,
+    scan_unexpected,
     WHITEBOX_AUDITORS
 )
 from orchestrator.queue import TaskQueue
@@ -41,13 +41,12 @@ def run_agent(
     target: str,
     flag_format: str,
     dep_ids: list[str],
-    # Whitebox extras — None in blackbox mode
     local_target: str | None = None,
     source_code: str | None = None,
     show_spinner: bool = True,
     context_override: str | None = None,
-) -> tuple[Task, str | None]:
-    """Run a single agent, return (task, flag_or_None)."""
+) -> Task:
+    """Run a single agent, return the completed Task."""
     task = Task(
         id=make_id(),
         agent_type=agent_type,
@@ -58,7 +57,6 @@ def run_agent(
 
     context = context_override if context_override is not None else orc.get_context_for(task)
 
-    # Route to correct prompt builder
     if source_code is not None:
         prompt = build_whitebox_prompt(
             agent_type, target, context, flag_format,
@@ -76,7 +74,7 @@ def run_agent(
         spinner_thread.start()
 
     try:
-        flag = orc.run_task(task, prompt, flag_format=flag_format)
+        orc.run_task(task, prompt)
     finally:
         if show_spinner:
             stop.set()
@@ -91,7 +89,7 @@ def run_agent(
         print(f"[{ts()}] ✗  [{agent_type.value}] failed after {elapsed}s")
     print()
 
-    return task, flag
+    return task
 
 
 # ─────────────────────────────────────────────
@@ -112,16 +110,12 @@ def run_blackbox_pipeline(
 
     # Phase 1: web_recon always first
     print(f"[{ts()}] Phase 1 — web_recon\n")
-    recon_task, flag = run_agent(orc, AgentType.WEB_RECON, target, flag_format, [])
+    recon_task = run_agent(orc, AgentType.WEB_RECON, target, flag_format, [])
     already_ran.add("web_recon")
-
     if recon_task.status == TaskStatus.DONE:
-        summary = (recon_task.result or {}).get("summary", "")
-        completed.append({"agent": "web_recon", "summary": summary})
-        if flag:
-            found_flag = flag
+        completed.append({"agent": "web_recon", "summary": (recon_task.result or {}).get("summary", "")})
 
-    # Phase 2: Supervisor loop
+    # Phase 2: Supervisor loop — flag detection is the supervisor's responsibility
     iteration = 0
     retried: set[str] = set()
     while not found_flag and iteration < MAX_ITERATIONS:
@@ -147,9 +141,10 @@ def run_blackbox_pipeline(
 
         if decision.get("flag"):
             found_flag = decision["flag"]
+            q.emit("flag_found", {"agent": "supervisor", "flag": found_flag})
             break
 
-        # Handle retry — re-run a prior agent that produced insufficient output
+        # Handle retry
         retry_agent_str = decision.get("retry")
         if retry_agent_str and retry_agent_str not in retried:
             retried.add(retry_agent_str)
@@ -161,14 +156,10 @@ def run_blackbox_pipeline(
                 print(f"[{ts()}] ↺  retrying [{retry_agent_str}]\n")
                 dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
                 retry_context = f"RETRY: previous output was insufficient. {decision.get('reason', '')} Be more thorough."
-                task, flag = run_agent(orc, retry_agent, target, flag_format, dep_ids,
-                                       context_override=retry_context)
-                if flag:
-                    found_flag = flag
-                    break
+                task = run_agent(orc, retry_agent, target, flag_format, dep_ids,
+                                 context_override=retry_context)
                 if task.status == TaskStatus.DONE:
                     summary = (task.result or {}).get("summary", "")
-                    # Replace prior summary for this agent
                     completed = [c for c in completed if c["agent"] != retry_agent_str]
                     completed.append({"agent": retry_agent_str, "summary": summary})
             continue
@@ -184,29 +175,16 @@ def run_blackbox_pipeline(
             break
 
         dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
-        context_for_next = decision.get("context_for_next")
-        task, flag = run_agent(orc, next_agent, target, flag_format, dep_ids,
-                               context_override=context_for_next)
+        task = run_agent(orc, next_agent, target, flag_format, dep_ids,
+                         context_override=decision.get("context_for_next"))
         already_ran.add(next_agent_str)
-
-        if flag:
-            found_flag = flag
-            break
 
         if task.status == TaskStatus.DONE:
             summary = (task.result or {}).get("summary", "")
             completed.append({"agent": next_agent_str, "summary": summary})
-
-            if not flag:
-                flag = scan_flag(summary, flag_format) or scan_flag_section(summary)
-                if flag:
-                    found_flag = flag
-                    break
-
             unexp = scan_unexpected(summary)
             if unexp:
                 unexpected.append({"agent": next_agent_str, "finding": unexp["raw"]})
-
         elif task.status == TaskStatus.FAILED:
             completed.append({"agent": next_agent_str, "summary": "[FAILED — no findings]"})
 
@@ -254,38 +232,23 @@ def run_whitebox_pipeline(
                 still = ", ".join(future_to_name[f] for f in pending)
                 print(f"[{ts()}]    waiting for: {still} ...\n")
 
-    cr_task, cr_flag = results["code_reader"]
-    dc_task, dc_flag = results["dep_checker"]
-
     already_ran.update({"code_reader", "dep_checker"})
-
-    for task_obj, agent_name, agent_flag in [
-        (cr_task, "code_reader", cr_flag),
-        (dc_task, "dep_checker", dc_flag),
-    ]:
+    for agent_name, task_obj in [("code_reader", results["code_reader"]), ("dep_checker", results["dep_checker"])]:
         if task_obj.status == TaskStatus.DONE:
-            summary = (task_obj.result or {}).get("summary", "")
-            completed.append({"agent": agent_name, "summary": summary})
-            if agent_flag:
-                return agent_flag
+            completed.append({"agent": agent_name, "summary": (task_obj.result or {}).get("summary", "")})
 
     # Phase 3: vuln_reasoner (depends on both)
     print(f"[{ts()}] Phase 3 — vuln_reasoner\n")
     dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
-    vr_task, flag = run_agent(
-        orc, AgentType.VULN_REASONER, target, flag_format, dep_ids, **wb_kwargs
-    )
+    vr_task = run_agent(orc, AgentType.VULN_REASONER, target, flag_format, dep_ids, **wb_kwargs)
     already_ran.add("vuln_reasoner")
     if vr_task.status == TaskStatus.DONE:
-        summary = (vr_task.result or {}).get("summary", "")
-        completed.append({"agent": "vuln_reasoner", "summary": summary})
-        if flag:
-            return flag
+        completed.append({"agent": "vuln_reasoner", "summary": (vr_task.result or {}).get("summary", "")})
     else:
         print(f"[{ts()}] ✗  vuln_reasoner failed — cannot continue whitebox pipeline\n")
         return None
 
-    # Phase 4: Supervisor loop — picks auditors based on vuln_reasoner findings
+    # Phase 4: Supervisor loop
     available_auditors = {a.value for a in WHITEBOX_AUDITORS}
     iteration = 0
     retried: set[str] = set()
@@ -314,6 +277,7 @@ def run_whitebox_pipeline(
 
         if decision.get("flag"):
             found_flag = decision["flag"]
+            q.emit("flag_found", {"agent": "supervisor", "flag": found_flag})
             break
 
         # Handle retry
@@ -331,11 +295,8 @@ def run_whitebox_pipeline(
                     print(f"[{ts()}] ↺  retrying [{retry_agent_str}]\n")
                     dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
                     retry_context = f"RETRY: previous output was insufficient. {decision.get('reason', '')} Be more thorough."
-                    task, flag = run_agent(orc, retry_agent, target, flag_format, dep_ids,
-                                           context_override=retry_context, **wb_kwargs)
-                    if flag:
-                        found_flag = flag
-                        break
+                    task = run_agent(orc, retry_agent, target, flag_format, dep_ids,
+                                     context_override=retry_context, **wb_kwargs)
                     if task.status == TaskStatus.DONE:
                         summary = (task.result or {}).get("summary", "")
                         completed = [c for c in completed if c["agent"] != retry_agent_str]
@@ -346,8 +307,6 @@ def run_whitebox_pipeline(
             break
 
         next_agent_str = decision["next"]
-
-        # Supervisor must only pick auditors in whitebox mode
         if next_agent_str not in available_auditors:
             print(f"[{ts()}] ✗  '{next_agent_str}' is not a whitebox auditor — stopping")
             break
@@ -359,26 +318,12 @@ def run_whitebox_pipeline(
             break
 
         dep_ids = [t.id for t in orc.tasks.values() if t.status == TaskStatus.DONE]
-        context_for_next = decision.get("context_for_next")
-        task, flag = run_agent(
-            orc, next_agent, target, flag_format, dep_ids,
-            context_override=context_for_next, **wb_kwargs
-        )
+        task = run_agent(orc, next_agent, target, flag_format, dep_ids,
+                         context_override=decision.get("context_for_next"), **wb_kwargs)
         already_ran.add(next_agent_str)
 
-        if flag:
-            found_flag = flag
-            break
-
         if task.status == TaskStatus.DONE:
-            summary = (task.result or {}).get("summary", "")
-            completed.append({"agent": next_agent_str, "summary": summary})
-
-            flag = scan_flag(summary, flag_format) or scan_flag_section(summary)
-            if flag:
-                found_flag = flag
-                break
-
+            completed.append({"agent": next_agent_str, "summary": (task.result or {}).get("summary", "")})
         elif task.status == TaskStatus.FAILED:
             completed.append({"agent": next_agent_str, "summary": "[FAILED — no findings]"})
 

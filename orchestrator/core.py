@@ -1,6 +1,5 @@
 # Aurelinth — Orchestrator core logic: task management, dependency resolution, context building, and agent execution.
 import uuid
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -94,35 +93,8 @@ def make_id() -> str:
     return str(uuid.uuid4())[:8]
 
 
-def scan_flag(text: str, flag_format: str) -> str | None:
-    r"""Find a real flag matching flag_format prefix in text."""
-    if not flag_format or not text:
-        return None
-    prefix = flag_format.split("{")[0]
-    pattern = re.escape(prefix) + r"\{[^}\n]{3,100}\}"
-    matches = re.findall(pattern, text)
-    real = [m for m in matches
-            if m != flag_format
-            and "..." not in m
-            and not re.search(r'\{[\s`]', m)]   # reject quoted/inline mentions
-    return real[0] if real else None
-
-
-def scan_flag_section(text: str) -> str | None:
-    """Fallback: find CTF-style flag pattern anywhere in text."""
-    if not text:
-        return None
-    for m in re.findall(r'[A-Za-z0-9_]+\{[^}\n]{5,100}\}', text):
-        if '...' not in m:
-            return m
-    return None
-
-
 def scan_unexpected(summary: str) -> dict | None:
-    """
-    Scan agent output for off-scope findings.
-    Returns dict if UNEXPECTED section found.
-    """
+    """Scan agent output for off-scope findings."""
     if "UNEXPECTED:" not in summary:
         return None
     try:
@@ -139,11 +111,8 @@ class Orchestrator:
         self.tasks:    dict[str, Task] = {}
         self.contexts: dict[str, dict] = {}
 
-    def run_task(self, task: Task, prompt: str,
-                 flag_format: str = "") -> str | None:
-        """
-        Run a single task. Returns flag string if found, None otherwise.
-        """
+    def run_task(self, task: Task, prompt: str) -> str | None:
+        """Run a single task. Returns structured summary or None on failure."""
         completed = self.q.get_completed_ids()
         if not task.can_run(completed):
             task.status = TaskStatus.BLOCKED
@@ -168,25 +137,10 @@ class Orchestrator:
             task.result = ctx
             task.status = TaskStatus.DONE
             self.q.mark_done(task.id)
-            self.q.emit("agent_done", {
-                "task_id":   task.id,
-                "truncated": ctx["truncated"]
-            })
+            self.q.emit("agent_done", {"task_id": task.id})
 
-            # Scan for flag (primary: regex with flag_format, fallback: generic pattern)
-            flag = scan_flag(raw, flag_format) if flag_format else scan_flag_section(raw)
-            if not flag:
-                flag = scan_flag(ctx.get("summary", ""), flag_format) if flag_format else scan_flag_section(ctx.get("summary", ""))
-            if flag:
-                self.q.emit("flag_found", {
-                    "task_id": task.id,
-                    "agent":   task.agent_type.value,
-                    "flag":    flag
-                })
-                return flag
-
-            # Scan for unexpected findings
-            unexpected = scan_unexpected(ctx.get("summary", ""))
+            summary = ctx.get("summary", "")
+            unexpected = scan_unexpected(summary)
             if unexpected:
                 self.q.emit("unexpected_finding", {
                     "task_id": task.id,
@@ -194,7 +148,7 @@ class Orchestrator:
                     "finding": unexpected["raw"][:200]
                 })
 
-            return None
+            return summary
 
         except Exception as e:
             task.retries += 1
@@ -207,7 +161,6 @@ class Orchestrator:
             self.contexts[task.id] = {
                 "mongo_ref": None,
                 "summary":   f"[FAILED: {str(e)[:100]}]",
-                "truncated": False,
             }
             return None
 
