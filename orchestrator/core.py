@@ -137,7 +137,11 @@ class Orchestrator:
             task.result = ctx
             task.status = TaskStatus.DONE
             self.q.mark_done(task.id)
-            self.q.emit("agent_done", {"task_id": task.id})
+            self.q.emit("agent_done", {
+                "task_id": task.id,
+                "agent":   task.agent_type.value,
+                "summary": ctx.get("summary", "")[:200].replace("\n", " "),
+            })
 
             summary = ctx.get("summary", "")
             unexpected = scan_unexpected(summary)

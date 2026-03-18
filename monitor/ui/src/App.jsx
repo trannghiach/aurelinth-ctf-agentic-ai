@@ -71,7 +71,15 @@ export default function App() {
     const [agents, setAgents]           = useState({})
     const [flagBanner, setFlagBanner]   = useState(null)
     const [running, setRunning]         = useState(false)
+    const [spinnerIdx, setSpinnerIdx]   = useState(0)
     const logRef = useRef(null)
+    const spinnerFrames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+
+    useEffect(() => {
+        if (!running) return
+        const t = setInterval(() => setSpinnerIdx(i => (i + 1) % spinnerFrames.length), 100)
+        return () => clearInterval(t)
+    }, [running])
 
     useEffect(() => {
         fetch(`${API}/events/history`)
@@ -109,14 +117,23 @@ export default function App() {
 
     function updateAgent(type, data) {
         if (!data.task_id) return
-        setAgents(prev => ({
-            ...prev,
-            [data.task_id]: {
-                agent: data.agent || prev[data.task_id]?.agent || data.task_id,
-                status: type === "agent_start" ? "running"
-                      : type === "agent_done"  ? "done" : "failed"
+        setAgents(prev => {
+            const existing = prev[data.task_id] || {}
+            const startedAt = type === "agent_start" ? Date.now() : existing.startedAt
+            const elapsed = (type === "agent_done" || type === "agent_failed") && existing.startedAt
+                ? Math.round((Date.now() - existing.startedAt) / 1000)
+                : existing.elapsed
+            return {
+                ...prev,
+                [data.task_id]: {
+                    agent:     data.agent || existing.agent || data.task_id,
+                    status:    type === "agent_start" ? "running" : type === "agent_done" ? "done" : "failed",
+                    startedAt,
+                    elapsed,
+                    summary:   data.summary || existing.summary,
+                }
             }
-        }))
+        })
     }
 
     function run() {
@@ -148,7 +165,7 @@ export default function App() {
             <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
                 <span style={{ fontSize: 15, fontWeight: "bold", color: "#fff" }}>aurelinth</span>
                 <span style={{ fontSize: 11, color: running ? "#facc15" : "#333", marginLeft: 10 }}>
-                    {running ? "⠋ running" : "idle"}
+                    {running ? `${spinnerFrames[spinnerIdx]} running` : "idle"}
                 </span>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
                     {["blackbox", "whitebox"].map(m => (
@@ -198,18 +215,21 @@ export default function App() {
             {/* Agent pills */}
             {Object.keys(agents).length > 0 && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-                    {Object.entries(agents).map(([id, { agent, status }]) => (
-                        <div key={id} style={{
+                    {Object.entries(agents).map(([id, { agent, status, elapsed, summary }]) => (
+                        <div key={id} title={summary || ""} style={{
                             padding: "3px 10px", borderRadius: 3, fontSize: 11,
                             border: `1px solid ${statusColor[status] || "#222"}`,
                             color: agentColor[agent] || "#a3a3a3",
                             background: status === "running" ? "#0f0f00" : "transparent",
-                            whiteSpace: "nowrap",
+                            whiteSpace: "nowrap", cursor: summary ? "help" : "default",
                         }}>
                             {agent}
                             <span style={{ color: statusColor[status], marginLeft: 5, fontSize: 10 }}>
-                                {status === "running" ? "⠋" : status === "done" ? "✓" : "✗"}
+                                {status === "running" ? spinnerFrames[spinnerIdx] : status === "done" ? "✓" : "✗"}
                             </span>
+                            {elapsed != null && status !== "running" &&
+                                <span style={{ color: "#333", marginLeft: 4, fontSize: 10 }}>{elapsed}s</span>
+                            }
                         </div>
                     ))}
                 </div>
@@ -276,18 +296,18 @@ function renderEvent({ type, data }) {
             return <span style={{ color: "#444" }}>{data.agent} starting</span>
 
         case "agent_done":
-            return <><span style={{ color: "#4ade80" }}>{data.agent || data.task_id} done</span>
-                {data.truncated && <span style={{ color: "#444" }}> (summarized)</span>}</>
+            return <><span style={{ color: "#4ade80" }}>{data.agent} done</span>
+                {data.summary && <span style={{ color: "#2d4a2d" }}> — {data.summary.slice(0, 120)}</span>}</>
 
         case "agent_failed":
-            return <span style={{ color: "#f87171" }}>{data.agent || data.task_id} failed — {data.error}</span>
+            return <span style={{ color: "#f87171" }}>{data.agent} failed — {data.error}</span>
 
         case "tool_call":
             return <><span style={{ color: "#60a5fa" }}>🔧 {data.agent} → {data.tool}</span>
                 <span style={{ color: "#4a6a7a" }}> {data.cmd}</span></>
 
         case "tool_result":
-            return <span style={{ color: "#2a2a2a" }}>✓ [{data.status}] {data.output}</span>
+            return <span style={{ color: "#374151" }}>✓ [{data.status}] {data.output}</span>
 
         case "agent_reason":
             return <span style={{ color: "#c084fc" }}>{data.agent}: {data.text}</span>

@@ -141,7 +141,9 @@ def run_blackbox_pipeline(
 
         if decision.get("flag"):
             found_flag = decision["flag"]
-            q.emit("flag_found", {"agent": "supervisor", "flag": found_flag})
+            # Credit the last agent that ran — it's the one whose output contained the flag
+            finder = completed[-1]["agent"] if completed else "supervisor"
+            q.emit("flag_found", {"agent": finder, "flag": found_flag})
             break
 
         # Handle retry
@@ -277,7 +279,8 @@ def run_whitebox_pipeline(
 
         if decision.get("flag"):
             found_flag = decision["flag"]
-            q.emit("flag_found", {"agent": "supervisor", "flag": found_flag})
+            finder = completed[-1]["agent"] if completed else "supervisor"
+            q.emit("flag_found", {"agent": finder, "flag": found_flag})
             break
 
         # Handle retry
