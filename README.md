@@ -1,4 +1,4 @@
-# Aurelinth
+# AgenticAurelinth
 
 Multi-agent framework for automating CTF web challenges. Orchestrates a team of specialist AI agents — each focused on a single attack class — through a supervisor loop that routes decisions based on accumulated findings.
 
