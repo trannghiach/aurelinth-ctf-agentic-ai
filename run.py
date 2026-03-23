@@ -8,7 +8,7 @@ from datetime import datetime
 from memory import get_mongo, get_redis
 from orchestrator.core import (
     Orchestrator, Task, AgentType, TaskStatus, make_id,
-    scan_unexpected,
+    scan_unexpected, scan_flag,
     WHITEBOX_AUDITORS
 )
 from orchestrator.queue import TaskQueue
@@ -113,7 +113,11 @@ def run_blackbox_pipeline(
     recon_task = run_agent(orc, AgentType.WEB_RECON, target, flag_format, [])
     already_ran.add("web_recon")
     if recon_task.status == TaskStatus.DONE:
-        completed.append({"agent": "web_recon", "summary": (recon_task.result or {}).get("summary", "")})
+        summary = (recon_task.result or {}).get("summary", "")
+        completed.append({"agent": "web_recon", "summary": summary})
+        if flag := scan_flag(summary):
+            q.emit("flag_found", {"agent": "web_recon", "flag": flag})
+            return flag
 
     # Phase 2: Supervisor loop — flag detection is the supervisor's responsibility
     iteration = 0
@@ -184,6 +188,10 @@ def run_blackbox_pipeline(
         if task.status == TaskStatus.DONE:
             summary = (task.result or {}).get("summary", "")
             completed.append({"agent": next_agent_str, "summary": summary})
+            if flag := scan_flag(summary):
+                q.emit("flag_found", {"agent": next_agent_str, "flag": flag})
+                found_flag = flag
+                break
             unexp = scan_unexpected(summary)
             if unexp:
                 unexpected.append({"agent": next_agent_str, "finding": unexp["raw"]})
@@ -326,7 +334,12 @@ def run_whitebox_pipeline(
         already_ran.add(next_agent_str)
 
         if task.status == TaskStatus.DONE:
-            completed.append({"agent": next_agent_str, "summary": (task.result or {}).get("summary", "")})
+            summary = (task.result or {}).get("summary", "")
+            completed.append({"agent": next_agent_str, "summary": summary})
+            if flag := scan_flag(summary):
+                q.emit("flag_found", {"agent": next_agent_str, "flag": flag})
+                found_flag = flag
+                break
         elif task.status == TaskStatus.FAILED:
             completed.append({"agent": next_agent_str, "summary": "[FAILED — no findings]"})
 

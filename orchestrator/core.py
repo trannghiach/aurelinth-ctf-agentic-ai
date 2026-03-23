@@ -93,6 +93,14 @@ def make_id() -> str:
     return str(uuid.uuid4())[:8]
 
 
+def scan_flag(summary: str) -> str | None:
+    """Extract flag value from agent output. Looks for a flag pattern near a FLAG: marker."""
+    import re
+    # Anchor on FLAG: then find the first word{...} pattern on the same line
+    match = re.search(r"FLAG:.*?(\w+\{[^}]+\})", summary)
+    return match.group(1) if match else None
+
+
 def scan_unexpected(summary: str) -> dict | None:
     """Scan agent output for off-scope findings."""
     if "UNEXPECTED:" not in summary:

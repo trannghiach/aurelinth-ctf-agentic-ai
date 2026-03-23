@@ -1,7 +1,15 @@
 # Aurelinth Supervisor — Gemini Flash do agent selection based on findings so far
 import json
+import os
 from orchestrator.gemini import call
 from orchestrator.core import AgentType, WHITEBOX_AUDITORS
+
+_SKILL_DIR = os.path.join(os.path.dirname(__file__), "..", "teams", "supervisor")
+
+def _load_skill(name: str) -> str:
+    path = os.path.join(_SKILL_DIR, f"{name}.md")
+    with open(path) as f:
+        return f.read()
 
 # Blackbox: exclude infrastructure agents that are handled by run.py directly
 BLACKBOX_AGENTS = [
@@ -54,17 +62,23 @@ def _decide_blackbox(
 ) -> dict:
     available = [a for a in BLACKBOX_AGENTS if a not in already_ran]
 
-    summaries = "\n".join(
-        f"- [{c['agent']}]: {c['summary'][:800]}" for c in completed
-    )
+    def _summarize(c: dict) -> str:
+        import re
+        s = c['summary']
+        flag_match = re.search(r"FLAG:.*", s)
+        flag_line = f"\n  {flag_match.group(0)}" if flag_match else ""
+        return f"- [{c['agent']}]: {s[:800]}{flag_line}"
+
+    summaries = "\n".join(_summarize(c) for c in completed)
     unexpected_block = ""
     if unexpected:
         unexpected_block = "\nUnexpected findings from agents:\n" + "\n".join(
             f"- [{u['agent']}]: {u['finding']}" for u in unexpected
         )
 
-    prompt = f"""You are a CTF web security supervisor. Based on findings so far,
-decide which single agent to run next.
+    prompt = f"""{_load_skill("blackbox")}
+
+---
 
 Target: {target}
 Flag format: {flag_format or "unknown"}
@@ -73,28 +87,7 @@ Completed agents and their findings:
 {summaries}
 {unexpected_block}
 
-Available agents (not yet run): {", ".join(available) if available else "none"}
-
-Rules:
-- You have NO tools. Do not attempt to use any tools or read any files.
-- Pick the ONE most promising agent based on actual evidence in findings
-- If findings strongly suggest a specific vulnerability → pick matching agent
-- If no clear evidence for remaining agents → set next=null, stop=true
-- If all high-value agents already ran and no flag found → stop=true
-- If findings contain a flag matching {flag_format or "CTF flag format"} → stop=true, flag=<value>
-- Do not run agents just because they haven't run yet — only run if evidence supports it
-- If the last completed agent produced weak/incomplete output (missing endpoints, no findings, too short) → set retry=<agent_name> instead of next, and explain what was missing
-- Each agent can only be retried ONCE — do not retry an agent marked as already_retried
-
-Return ONLY JSON, no markdown:
-{{
-  "next": "agent_name_or_null",
-  "retry": null,
-  "reason": "one sentence why — cite specific evidence from findings",
-  "context_for_next": "focused 2-3 sentence briefing for the next agent — only what is directly relevant to its task, nothing else",
-  "stop": false,
-  "flag": null
-}}"""
+Available agents (not yet run): {", ".join(available) if available else "none"}"""
 
     return _call_supervisor(prompt, available)
 
@@ -121,9 +114,9 @@ def _decide_whitebox(
     if other_summaries:
         auditor_results_block = "\nCompleted auditors:\n" + "\n".join(other_summaries)
 
-    prompt = f"""You are a CTF web security supervisor for a WHITEBOX challenge.
-vuln_reasoner has already analyzed the source code and produced ranked findings.
-Your job: pick the ONE auditor that targets the highest-confidence finding not yet attempted.
+    prompt = f"""{_load_skill("whitebox")}
+
+---
 
 Target: {target}
 Flag format: {flag_format or "unknown"}
@@ -132,41 +125,7 @@ vuln_reasoner findings (ranked by exploitability):
 {vuln_reasoner_summary or "No vuln_reasoner output available"}
 {auditor_results_block}
 
-Available auditors (not yet run): {", ".join(available) if available else "none"}
-
-Auditor → vulnerability mapping:
-- sqli_auditor            → SQL injection
-- xss_auditor             → Cross-site scripting
-- auth_auditor            → Auth bypass, JWT forge, session manipulation
-- lfi_auditor             → LFI, path traversal
-- ssti_auditor            → Server-side template injection
-- access_control_auditor  → IDOR, missing ownership check
-- upload_auditor          → File upload bypass
-- race_condition_auditor  → TOCTOU, concurrent state
-- crypto_auditor          → Weak crypto, predictable token, ECB, padding oracle
-- deserialization_auditor → pickle, yaml.load, PHP unserialize
-
-Rules:
-- You have NO tools. Do not attempt to use any tools or read any files.
-- ALWAYS follow vuln_reasoner ATTACK RECOMMENDATION if present — it ranked findings for you
-- Pick auditor matching the HIGHEST confidence finding not yet run
-- If a completed auditor FAILED → pick the next highest confidence finding
-- If vuln_reasoner output is missing or unclear → stop=true
-- If all HIGH/MEDIUM findings have been attempted → stop=true
-- If findings contain a flag matching {flag_format or "CTF flag format"} → stop=true, flag=<value>
-- Do NOT pick an auditor without a corresponding FINDING in vuln_reasoner output
-- If a completed auditor produced no exploitation attempt or vague output → set retry=<auditor_name> instead of next
-- Each auditor can only be retried ONCE — do not retry an auditor marked as already_retried
-
-Return ONLY JSON, no markdown:
-{{
-  "next": "auditor_name_or_null",
-  "retry": null,
-  "reason": "one sentence — cite specific FINDING from vuln_reasoner (file, line, confidence)",
-  "context_for_next": "focused 2-3 sentence briefing: the exact vulnerability, file, line, and what to target — strip everything unrelated",
-  "stop": false,
-  "flag": null
-}}"""
+Available auditors (not yet run): {", ".join(available) if available else "none"}"""
 
     return _call_supervisor(prompt, available)
 
